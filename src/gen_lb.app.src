@@ -1,0 +1,12 @@
+{application, gen_lb,
+ [
+  {description, "A library for generic communication with a cluster of scylla instances."},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { gen_lb_app, []}},
+  {env, []}
+ ]}.
