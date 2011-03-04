@@ -14,7 +14,9 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/3, start_link/4, start_link/5, call/3, cast/2]).
+-export([start_link/3, start_link/4, start_link/5, call/3, cast/2, stop/1]).
+
+-export([snd/2, connect_node/1]).
 
 %% Selection Functions
 -export([round_robin/3]).
@@ -58,6 +60,9 @@ start_link(Name, Seed, RemoteService, SelectNode, Context) when is_atom(Seed), i
   start_link(Name, [Seed], RemoteService, SelectNode, Context);
 start_link(Name, Seeds, RemoteService, SelectNode, Context) when is_list(Seeds), is_function(SelectNode) ->
   gen_server:start_link(Name, ?MODULE, {Seeds, RemoteService, SelectNode, Context}, []).
+  
+stop(Name) ->
+  gen_server:cast(Name, stop).
   
 call(Server, Request, Timeout) ->
   gen_server:call(Server, {call, Request, Timeout}, Timeout).
@@ -108,6 +113,8 @@ init({Seeds, RemoteService, SelectNode, Context}) ->
 %%--------------------------------------------------------------------
 handle_call(state, _From, State) ->
   {reply, State, State};
+handle_call(nodes, _From, State) ->
+  {reply, State#state.nodes, State};
 handle_call({call, Request, Timeout}, From = {_, Ref}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
   case Nodes of
     [] ->
@@ -129,6 +136,8 @@ handle_call(_Request, _From, State) ->
 %% @doc Handling cast messages
 %% @end 
 %%--------------------------------------------------------------------
+handle_cast(stop, State) ->
+  {stop, normal, State};
 handle_cast({cast, Request}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
   case Nodes of
     [] ->
@@ -149,7 +158,7 @@ handle_cast({cast, Request}, State = #state{context=Context,remote_service=Remot
 %%--------------------------------------------------------------------
 handle_info(heartbeat, State=#state{seeds=Seeds,handlers=Handlers,nodes=Nodes,beats_up=Beats}) ->
   KnownNodes = query_cluster(random_set_element(Nodes, Seeds)),
-  spawn_connect_nodes(KnownNodes),
+  spawn_connect_nodes(sets:to_list(KnownNodes)),
   BeatsUp = case sets:size(Nodes) of
     0 -> 0;
     _ -> Beats+1
@@ -198,17 +207,17 @@ nodeup(Node, State=#state{nodes=Nodes,pending=Pending,handlers=Handlers,remote_s
     ok -> case length(Pending) of
         0 ->
           error_logger:info_msg("Nothing in queue.~n"),
-          State#state{nodes=sets:add_element(Nodes,Node)};
+          State#state{nodes=sets:add_element(Node,Nodes)};
         _ ->
           error_logger:info_msg("Flushing pending requests.~n"),
-          flush_pending(State#state{nodes=sets:add_element(Nodes,Node)})
+          flush_pending(State#state{nodes=sets:add_element(Node,Nodes)})
       end;
     _ -> State
   end.
   
 verify_membership(Node, RemoteService) ->
   Ref = make_ref(),
-  {RemoteService, Node} ! {ping, Ref},
+  gen_lb:snd({RemoteService, Node}, {ping, self(), Ref}),
   receive
     {pong, Ref} -> ok
   after 1000 ->
@@ -233,15 +242,22 @@ random_set_element(Set) ->
 
 spawn_connect_nodes(Nodes) ->
   spawn(fun() ->
-      lists:foreach(fun(Node) -> net_kernel:connect_node(Node) end, Nodes)
+      lists:foreach(fun(Node) -> gen_lb:connect_node(Node) end, Nodes)
     end).
+    
+%% to be mocked out for testing
+connect_node(Node) ->
+  net_kernel:connect_node(Node).
+  
+snd(Destination, Msg) ->
+  Destination ! Msg.
 
 query_cluster(Seeds) ->
   Refs = lists:map(fun(Seed) ->
       Ref = make_ref(),
-      {admin, Seed} ! {cluster, self(), Ref},
+      gen_lb:snd({admin, Seed}, {cluster, self(), Ref}),
       Ref
-    end),
+    end, Seeds),
   lists:foldl(fun(Ref,Set) ->
       receive
         {cluster, Ref, Nodes} -> sets:union(Set, sets:from_list(Nodes))
@@ -253,14 +269,14 @@ query_cluster(Seeds) ->
 cast_handler(RemoteService, Nodes, Request, Context, SelectNode) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   error_logger:info_msg("sending cast to ~p~n", [{RemoteService, Node}]),
-  {RemoteService, Node} ! Request,
+  gen_lb:snd({RemoteService,Node}, Request),
   Context2.
 
 call_handler(From, Proxy, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   Pid = spawn_link(fun() ->
       error_logger:info_msg("sending call to ~p~n", [{RemoteService, Node}]),
-      {RemoteService, Node} ! {self(), Ref, Request},
+      gen_lb:snd({RemoteService, Node}, {self(), Ref, Request}),
       receive
         {RemoteEnd, Ref, Results} -> gen_server:reply(From, {RemoteEnd, Ref, Results})
       after Timeout ->
