@@ -16,8 +16,6 @@
 %% API
 -export([start_link/3, start_link/4, start_link/5, call/3, cast/2, stop/1]).
 
--export([snd/2, connect_node/1]).
-
 %% Selection Functions
 -export([round_robin/3]).
 
@@ -62,7 +60,7 @@ start_link(Name, Seeds, RemoteService, SelectNode, Context) when is_list(Seeds),
   gen_server:start_link(Name, ?MODULE, {Seeds, RemoteService, SelectNode, Context}, []).
   
 stop(Name) ->
-  gen_server:cast(Name, stop).
+  gen_server:call(Name, stop).
   
 call(Server, Request, Timeout) ->
   gen_server:call(Server, {call, Request, Timeout}, Timeout).
@@ -93,11 +91,15 @@ round_robin(Nodes, Request, [Node|Context]=C) ->
 %% @end 
 %%--------------------------------------------------------------------
 init({Seeds, RemoteService, SelectNode, Context}) ->
+  Self = self(),
+  io:format(user, "I AM HELPING ~p~n", [{Self,Seeds}]),
   process_flag(trap_exit, true),
   net_kernel:monitor_nodes(true, [{node_type,all}]),
   KnownNodes = query_cluster(Seeds),
+  io:format(user, "known ~p~n", [KnownNodes]),
   spawn_connect_nodes(sets:to_list(KnownNodes)),
   {ok, TRef} = timer:send_interval(?HEARTBEAT_INTERVAL, heartbeat),
+  io:format(user, "UP~n", []),
   {ok, #state{seeds=Seeds,nodes=sets:new(),tref=TRef,context=Context,select_node=SelectNode,remote_service=RemoteService}}.
 
 %%--------------------------------------------------------------------
@@ -116,8 +118,8 @@ handle_call(state, _From, State) ->
 handle_call(nodes, _From, State) ->
   {reply, State#state.nodes, State};
 handle_call({call, Request, Timeout}, From = {_, Ref}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
-  case Nodes of
-    [] ->
+  case sets:size(Nodes) of
+    0 ->
       error_logger:error_msg("Cluster is down. Queueing request.~n"),
       Pend = #pending{type=call,request=Request,ref=Ref,from=From,time=now(),timeout=Timeout},
       {noreply, State#state{pending=[Pend|Pending]}};
@@ -125,9 +127,8 @@ handle_call({call, Request, Timeout}, From = {_, Ref}, State = #state{context=Co
       {Pid, Context2} = call_handler(From, self(), RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout),
       {noreply, State#state{handlers=dict:store(Pid,Ref,Handlers),context=Context2}}
   end;
-handle_call(_Request, _From, State) ->
-  Reply = ok,
-  {reply, Reply, State}.
+handle_call(stop, _From, State) ->
+  {stop, normal, ok, State}.
 
 %%--------------------------------------------------------------------
 %% @spec handle_cast(Msg, State) -> {noreply, State} |
@@ -139,8 +140,10 @@ handle_call(_Request, _From, State) ->
 handle_cast(stop, State) ->
   {stop, normal, State};
 handle_cast({cast, Request}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
-  case Nodes of
-    [] ->
+  io:format(user, "cast ~p nodes ~p~n", [Request, Nodes]),
+  case sets:size(Nodes) of
+    0 ->
+      io:format(user, "cluster be down yo~n", []),
       error_logger:error_msg("Cluster is down. Queueing request.~n"),
       Pend = #pending{type=cast,request=Request,time=now()},
       {noreply, State#state{pending=[Pend|Pending]}};
@@ -157,7 +160,8 @@ handle_cast({cast, Request}, State = #state{context=Context,remote_service=Remot
 %% @end 
 %%--------------------------------------------------------------------
 handle_info(heartbeat, State=#state{seeds=Seeds,handlers=Handlers,nodes=Nodes,beats_up=Beats}) ->
-  KnownNodes = query_cluster(random_set_element(Nodes, Seeds)),
+  io:format(user, "heartbeat~n", []),
+  KnownNodes = query_cluster([random_set_element(Nodes, Seeds)]),
   spawn_connect_nodes(sets:to_list(KnownNodes)),
   BeatsUp = case sets:size(Nodes) of
     0 -> 0;
@@ -172,11 +176,12 @@ handle_info({'EXIT', Handler, Reason}, State=#state{handlers=Handlers}) ->
   Handlers2 = dict:erase(Handler,Handlers),
   {noreply, State#state{handlers=Handlers2}};
 handle_info({nodeup,Node,_}, State) ->
+  io:format(user, "got nodeup ~p~n", [Node]),
   {noreply, nodeup(Node,State)};
 handle_info({nodedown,Node,_}, State) ->
   {noreply, nodedown(Node,State)};
 handle_info(_Info, State) ->
-  error_loger:info_msg("Load balancer did not understand: ~p~n", [_Info]),
+  error_logger:info_msg("Load balancer did not understand: ~p~n", [_Info]),
   {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -217,7 +222,7 @@ nodeup(Node, State=#state{nodes=Nodes,pending=Pending,handlers=Handlers,remote_s
   
 verify_membership(Node, RemoteService) ->
   Ref = make_ref(),
-  gen_lb:snd({RemoteService, Node}, {ping, self(), Ref}),
+  {RemoteService, Node} ! {ping, self(), Ref},
   receive
     {pong, Ref} -> ok
   after 1000 ->
@@ -242,20 +247,13 @@ random_set_element(Set) ->
 
 spawn_connect_nodes(Nodes) ->
   spawn(fun() ->
-      lists:foreach(fun(Node) -> gen_lb:connect_node(Node) end, Nodes)
+      lists:foreach(fun(Node) -> net_kernel:connect_node(Node) end, Nodes)
     end).
-    
-%% to be mocked out for testing
-connect_node(Node) ->
-  net_kernel:connect_node(Node).
-  
-snd(Destination, Msg) ->
-  Destination ! Msg.
 
 query_cluster(Seeds) ->
   Refs = lists:map(fun(Seed) ->
       Ref = make_ref(),
-      gen_lb:snd({admin, Seed}, {cluster, self(), Ref}),
+      {admin, Seed} ! {cluster, self(), Ref},
       Ref
     end, Seeds),
   lists:foldl(fun(Ref,Set) ->
@@ -269,14 +267,14 @@ query_cluster(Seeds) ->
 cast_handler(RemoteService, Nodes, Request, Context, SelectNode) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   error_logger:info_msg("sending cast to ~p~n", [{RemoteService, Node}]),
-  gen_lb:snd({RemoteService,Node}, Request),
+  {RemoteService,Node} ! Request,
   Context2.
 
 call_handler(From, Proxy, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   Pid = spawn_link(fun() ->
       error_logger:info_msg("sending call to ~p~n", [{RemoteService, Node}]),
-      gen_lb:snd({RemoteService, Node}, {self(), Ref, Request}),
+      {RemoteService, Node} ! {self(), Ref, Request},
       receive
         {RemoteEnd, Ref, Results} -> gen_server:reply(From, {RemoteEnd, Ref, Results})
       after Timeout ->
