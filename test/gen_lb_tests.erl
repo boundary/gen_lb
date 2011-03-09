@@ -10,7 +10,8 @@ all_test_() ->
       fun multiple_nodes_go_up/0,
       fun multiple_nodes_one_down/0,
       fun round_robin_dispatch/0,
-      {timeout, 30, [fun queue_when_down/0]}
+      fun queue_when_down/0,
+      fun flush_when_node_returns/0
     ]}.
 
 setup() -> ok.
@@ -64,13 +65,23 @@ round_robin_dispatch() ->
 queue_when_down() ->
   meck_send:new(gen_lb),
   gen_lb:start_link({local, lb}, [scylla@data1], writer, fun gen_lb:round_robin/3),
-  io:format(user, "lb ~p~n", [whereis(lb)]),
   gen_lb:cast(lb, "Herp"),
+  Fut = gen_lb:call_future(lb, "Herp", 30000),
   Nodes = gen_server:call(lb, nodes),
   State = gen_server:call(lb, state),
   Pending = element(9, State),
   ?assertEqual(sets:new(), Nodes),
-  ?assertMatch([_], Pending).
+  ?assertMatch([_,_], Pending).
+  
+flush_when_node_returns() ->
+  {ok, C} = countdown:new(5),
+  meck_send:new(gen_lb),
+  meck_send:add_listener(gen_lb, {writer,scylla@data1}, spawn(fun() -> writer_loop(C, scylla@data1, true) end)),
+  gen_lb:start_link({local, lb}, [scylla@data1], writer, fun gen_lb:round_robin/3),
+  Fut = gen_lb:call_future(lb, "Herp", 1000),
+  lb ! {nodeup,scylla@data1,make_ref()},
+  Reply = Fut(),
+  ?assertMatch({_, _, {scylla@data1, "Derp"}}, Reply).
 
 admin_loop(Counter,Cluster) ->
   receive
