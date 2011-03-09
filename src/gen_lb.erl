@@ -14,7 +14,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/3, start_link/4, start_link/5, call/3, cast/2, stop/1]).
+-export([start_link/3, start_link/4, start_link/5, call/3, call_future/3, cast/2, stop/1]).
 
 %% Selection Functions
 -export([round_robin/3]).
@@ -64,6 +64,21 @@ stop(Name) ->
   
 call(Server, Request, Timeout) ->
   gen_server:call(Server, {call, Request, Timeout}, Timeout).
+  
+call_future(Server, Request, Timeout) ->
+  Ref = make_ref(),
+  Parent = self(),
+  spawn_link(fun() ->
+      Reply = call(Server, Request, Timeout),
+      Parent ! {Ref, Reply}
+    end),
+  fun() ->
+    receive
+      {Ref, Reply} -> Reply
+    after Timeout ->
+      exit(timeout)
+    end
+  end.
   
 cast(Server, Request) ->
   gen_server:cast(Server, {cast, Request}).
