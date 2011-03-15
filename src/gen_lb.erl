@@ -107,14 +107,11 @@ round_robin(Nodes, Request, [Node|Context]=C) ->
 %%--------------------------------------------------------------------
 init({Seeds, RemoteService, SelectNode, Context}) ->
   Self = self(),
-  io:format(user, "I AM HELPING ~p~n", [{Self,Seeds}]),
   process_flag(trap_exit, true),
   net_kernel:monitor_nodes(true, [{node_type,all}]),
   KnownNodes = query_cluster(Seeds),
-  io:format(user, "known ~p~n", [KnownNodes]),
   spawn_connect_nodes(sets:to_list(KnownNodes)),
   {ok, TRef} = timer:send_interval(?HEARTBEAT_INTERVAL, heartbeat),
-  io:format(user, "UP~n", []),
   {ok, #state{seeds=Seeds,nodes=sets:new(),tref=TRef,context=Context,select_node=SelectNode,remote_service=RemoteService}}.
 
 %%--------------------------------------------------------------------
@@ -155,10 +152,8 @@ handle_call(stop, _From, State) ->
 handle_cast(stop, State) ->
   {stop, normal, State};
 handle_cast({cast, Request}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
-  io:format(user, "cast ~p nodes ~p~n", [Request, Nodes]),
   case sets:size(Nodes) of
     0 ->
-      io:format(user, "cluster be down yo~n", []),
       error_logger:error_msg("Cluster is down. Queueing request.~n"),
       Pend = #pending{type=cast,request=Request,time=now()},
       {noreply, State#state{pending=[Pend|Pending]}};
@@ -175,7 +170,6 @@ handle_cast({cast, Request}, State = #state{context=Context,remote_service=Remot
 %% @end 
 %%--------------------------------------------------------------------
 handle_info(heartbeat, State=#state{seeds=Seeds,handlers=Handlers,nodes=Nodes,beats_up=Beats}) ->
-  io:format(user, "heartbeat~n", []),
   KnownNodes = query_cluster([random_set_element(Nodes, Seeds)]),
   spawn_connect_nodes(sets:to_list(KnownNodes)),
   BeatsUp = case sets:size(Nodes) of
@@ -191,7 +185,6 @@ handle_info({'EXIT', Handler, Reason}, State=#state{handlers=Handlers}) ->
   Handlers2 = dict:erase(Handler,Handlers),
   {noreply, State#state{handlers=Handlers2}};
 handle_info({nodeup,Node,_}, State) ->
-  io:format(user, "got nodeup ~p~n", [Node]),
   {noreply, nodeup(Node,State)};
 handle_info({nodedown,Node,_}, State) ->
   {noreply, nodedown(Node,State)};
