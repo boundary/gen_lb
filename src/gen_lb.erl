@@ -26,7 +26,7 @@
 -record(state, {context, select_node, remote_service, seeds, nodes, tref, handlers=dict:new(), pending=[], beats_up=0}).
 -record(pending, {type,request,ref,from,time,timeout}).
 
--define(HEARTBEAT_INTERVAL, 1000).
+-define(HEARTBEAT_INTERVAL, 10000).
 %%====================================================================
 %% API
 %%====================================================================
