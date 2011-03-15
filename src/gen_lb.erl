@@ -243,7 +243,10 @@ nodedown(Node, State=#state{nodes=Nodes}) ->
 
 random_set_element(Set, Default) ->
   case random_set_element(Set) of
-    undefined -> Default;
+    undefined -> case Default of
+        [D|_] -> D;
+        _ -> throw(no_seed_nodes)
+      end;
     I -> I
   end.
   
