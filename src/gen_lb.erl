@@ -263,6 +263,7 @@ spawn_connect_nodes(Nodes) ->
 
 query_cluster(Seeds) ->
   Refs = lists:map(fun(Seed) ->
+      Result = net_kernel:connect_node(Seed),
       Ref = make_ref(),
       {admin, Seed} ! {cluster, self(), Ref},
       Ref
