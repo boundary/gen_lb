@@ -106,7 +106,6 @@ round_robin(Nodes, Request, [Node|Context]=C) ->
 %% @end 
 %%--------------------------------------------------------------------
 init({Seeds, RemoteService, SelectNode, Context}) ->
-  Self = self(),
   process_flag(trap_exit, true),
   net_kernel:monitor_nodes(true, [{node_type,all}]),
   KnownNodes = query_cluster(Seeds),
@@ -129,14 +128,14 @@ handle_call(state, _From, State) ->
   {reply, State, State};
 handle_call(nodes, _From, State) ->
   {reply, State#state.nodes, State};
-handle_call({call, Request, Timeout}, From = {_, Ref}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
+handle_call({call, Request, Timeout}, From = {_, Ref}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
   case sets:size(Nodes) of
     0 ->
       error_logger:error_msg("Cluster is down. Queueing request.~n"),
       Pend = #pending{type=call,request=Request,ref=Ref,from=From,time=now(),timeout=Timeout},
       {noreply, State#state{pending=[Pend|Pending]}};
     _ ->
-      {Pid, Context2} = call_handler(From, self(), RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout),
+      {Pid, Context2} = call_handler(From, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout),
       {noreply, State#state{handlers=dict:store(Pid,Ref,Handlers),context=Context2}}
   end;
 handle_call(stop, _From, State) ->
@@ -151,7 +150,7 @@ handle_call(stop, _From, State) ->
 %%--------------------------------------------------------------------
 handle_cast(stop, State) ->
   {stop, normal, State};
-handle_cast({cast, Request}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,seeds=Seeds,pending=Pending,handlers=Handlers,select_node=SelectNode}) ->
+handle_cast({cast, Request}, State = #state{context=Context,remote_service=RemoteService,nodes=Nodes,pending=Pending,select_node=SelectNode}) ->
   case sets:size(Nodes) of
     0 ->
       error_logger:error_msg("Cluster is down. Queueing request.~n"),
@@ -169,14 +168,14 @@ handle_cast({cast, Request}, State = #state{context=Context,remote_service=Remot
 %% @doc Handling all non call/cast messages
 %% @end 
 %%--------------------------------------------------------------------
-handle_info(heartbeat, State=#state{seeds=Seeds,handlers=Handlers,nodes=Nodes,beats_up=Beats}) ->
+handle_info(heartbeat, State=#state{seeds=Seeds,nodes=Nodes,beats_up=Beats}) ->
   KnownNodes = query_cluster([random_set_element(Nodes, Seeds)]),
   spawn_connect_nodes(sets:to_list(KnownNodes)),
   BeatsUp = case sets:size(Nodes) of
     0 -> 0;
     _ -> Beats+1
   end,
-  {noreply, State#state{beats_up=Beats+1}};
+  {noreply, State#state{beats_up=BeatsUp}};
 handle_info({'EXIT', Handler, Reason}, State=#state{handlers=Handlers}) ->
   case Reason of
     normal -> ok;
@@ -216,7 +215,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-nodeup(Node, State=#state{nodes=Nodes,pending=Pending,handlers=Handlers,remote_service=RemoteService}) ->
+nodeup(Node, State=#state{nodes=Nodes,pending=Pending,remote_service=RemoteService}) ->
   error_logger:info_msg("~p: nodeup ~p~n", [?MODULE,Node]),
   case verify_membership(Node, RemoteService) of
     ok -> case length(Pending) of
@@ -283,7 +282,7 @@ cast_handler(RemoteService, Nodes, Request, Context, SelectNode) ->
   {RemoteService,Node} ! Request,
   Context2.
 
-call_handler(From, Proxy, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout) ->
+call_handler(From, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   Pid = spawn_link(fun() ->
       error_logger:info_msg("sending call to ~p~n", [{RemoteService, Node}]),
@@ -308,10 +307,10 @@ flush_pending(State = #state{pending=[#pending{type=call,request=Request,ref=Ref
       error_logger:info_msg("Request ~p thrown out due to age.", [Ref]),
       flush_pending(State#state{pending=Pending});
     _ ->
-      {Pid, Context2} = call_handler(From, self(), RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout),
+      {Pid, Context2} = call_handler(From, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout),
       flush_pending(State#state{pending=Pending,handlers=dict:store(Pid,Ref,Handlers),context=Context2})
   end;
 flush_pending(State = #state{pending=[#pending{type=cast,request=Request}|Pending],context=Context,remote_service=RemoteService,nodes=Nodes,select_node=SelectNode}) ->
   Context2 = cast_handler(RemoteService, Nodes, Request, Context, SelectNode),
-  flush_pending(State#state{pending=Pending}).
+  flush_pending(State#state{pending=Pending,context=Context2}).
 
