@@ -188,6 +188,8 @@ handle_info({nodeup,Node,_}, State) ->
   {noreply, nodeup(Node,State)};
 handle_info({nodedown,Node,_}, State) ->
   {noreply, nodedown(Node,State)};
+handle_info({cluster,_,Nodes}, State = #state{nodes=NodeSet}) ->
+  {noreply, State#state{nodes=sets:union(NodeSet, sets:from_list(Nodes))}};
 handle_info(_Info, State) ->
   error_logger:info_msg("Load balancer did not understand: ~p~n", [_Info]),
   {noreply, State}.
