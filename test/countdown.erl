@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% File:      countdown.erl
-%%% @author    cliff moon <cliff@fastip.com> []
-%%% @copyright 2011 fast_ip
+%%% @author    cliff moon <cliff@boundary.com> []
+%%% @copyright 2011 Boundary
 %%% @doc  
 %%%
 %%% @end  
@@ -9,7 +9,7 @@
 %%% @since 2011-03-03 by cliff moon
 %%%-------------------------------------------------------------------
 -module(countdown).
--author('cliff@fastip.com').
+-author('cliff@boundary.com').
 
 -behaviour(gen_server).
 
