@@ -297,14 +297,14 @@ query_cluster(Seeds) ->
 
 cast_handler(RemoteService, Nodes, Request, Context, SelectNode) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
-  error_logger:info_msg("sending cast to ~p~n", [{RemoteService, Node}]),
+  % error_logger:info_msg("sending cast to ~p~n", [{RemoteService, Node}]),
   {RemoteService,Node} ! Request,
   Context2.
 
 call_handler(From, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   Pid = spawn_link(fun() ->
-      error_logger:info_msg("sending call to ~p~n", [{RemoteService, Node}]),
+      % error_logger:info_msg("sending call to ~p~n", [{RemoteService, Node}]),
       {RemoteService, Node} ! {self(), Ref, Request},
       receive
         {RemoteEnd, Ref, Results} -> gen_server:reply(From, {RemoteEnd, Ref, Results})
