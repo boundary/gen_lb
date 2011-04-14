@@ -253,7 +253,8 @@ verify_membership(Node, RemoteService) ->
   receive
     {pong, Ref} -> ok
   after 1000 ->
-    timeout
+    %% this could be a node with slow startup. schedule verification in a few seconds.
+    timer:send_after(5000, self(), {nodeup, Node, []})
   end.
   
 nodedown(Node, State=#state{nodes=Nodes}) ->
