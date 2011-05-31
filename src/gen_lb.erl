@@ -41,10 +41,10 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--record(state, {context, select_node, remote_service, seeds, nodes, tref, handlers=dict:new(), pending=[], beats_up=0}).
+-record(state, {context, select_node, remote_service, seeds, nodes, tref, handlers=dict:new(), pending=[], beats_up=0, backoffs=dict:new()}).
 -record(pending, {type,request,ref,from,time,timeout}).
 
--define(HEARTBEAT_INTERVAL, 10000).
+-define(HEARTBEAT_INTERVAL, 30000).
 %%====================================================================
 %% API
 %%====================================================================
@@ -126,8 +126,7 @@ round_robin(Nodes, Request, [Node|Context]=C) ->
 init({Seeds, RemoteService, SelectNode, Context}) ->
   process_flag(trap_exit, true),
   net_kernel:monitor_nodes(true, [{node_type,all}]),
-  KnownNodes = query_cluster(Seeds),
-  spawn_connect_nodes(sets:to_list(KnownNodes)),
+  query_cluster(Seeds),
   {ok, TRef} = timer:send_interval(?HEARTBEAT_INTERVAL, heartbeat),
   {ok, #state{seeds=Seeds,nodes=sets:new(),tref=TRef,context=Context,select_node=SelectNode,remote_service=RemoteService}}.
 
@@ -187,8 +186,7 @@ handle_cast({cast, Request}, State = #state{context=Context,remote_service=Remot
 %% @end 
 %%--------------------------------------------------------------------
 handle_info(heartbeat, State=#state{seeds=Seeds,nodes=Nodes,beats_up=Beats}) ->
-  KnownNodes = query_cluster([random_set_element(Nodes, Seeds)]),
-  spawn_connect_nodes(sets:to_list(KnownNodes)),
+  query_cluster([random_set_element(Nodes, Seeds)]),
   BeatsUp = case sets:size(Nodes) of
     0 -> 0;
     _ -> Beats+1
@@ -205,8 +203,16 @@ handle_info({nodeup,Node,_}, State) ->
   {noreply, nodeup(Node,State)};
 handle_info({nodedown,Node,_}, State) ->
   {noreply, nodedown(Node,State)};
+handle_info({node_verified,Node}, State = #state{pending=Pending,nodes=Nodes}) ->
+  NewState = State#state{nodes=sets:add_element(Node,Nodes)},
+  case length(Pending) of
+    0 -> {noreply,NewState};
+    _ -> {noreply,flush_pending(NewState)}
+  end;
 handle_info({cluster,_,Nodes}, State = #state{nodes=NodeSet}) ->
-  {noreply, State#state{nodes=sets:union(NodeSet, sets:from_list(Nodes))}};
+  UnknownSet = sets:subtract(sets:from_list(Nodes), NodeSet),
+  spawn_connect_nodes(sets:to_list(UnknownSet)),
+  {noreply, State};
 handle_info(_Info, State) ->
   error_logger:info_msg("Load balancer did not understand: ~p~n", [_Info]),
   {noreply, State}.
@@ -227,34 +233,35 @@ terminate(_Reason, _State) ->
 %% @doc Convert process state when code is changed
 %% @end 
 %%--------------------------------------------------------------------
+code_change(_OldVsn, {state, Context, SelectNode, RemoteService, Seeds, Nodes, Tref, Handlers, Pending, BeatsUp}, _Extra) ->
+  {ok, {state,Context,SelectNode,RemoteService,Seeds,Nodes,Tref,Handlers,Pending,BeatsUp,dict:new()}};
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-nodeup(Node, State=#state{nodes=Nodes,pending=Pending,remote_service=RemoteService}) ->
-  error_logger:info_msg("~p: nodeup ~p~n", [?MODULE,Node]),
-  case verify_membership(Node, RemoteService) of
-    ok -> case length(Pending) of
-        0 ->
-          error_logger:info_msg("Nothing in queue.~n"),
-          State#state{nodes=sets:add_element(Node,Nodes)};
-        _ ->
-          error_logger:info_msg("Flushing pending requests.~n"),
-          flush_pending(State#state{nodes=sets:add_element(Node,Nodes)})
-      end;
-    _ -> State
-  end.
-  
-verify_membership(Node, RemoteService) ->
+nodeup(Node, State=#state{nodes=Nodes,pending=Pending,remote_service=RemoteService,backoffs=Backoffs}) ->
+  Backoff = case dict:find(Node, Backoffs) of
+    {ok, V} -> V;
+    _ -> 2500
+  end,
+  verify_membership(Node, RemoteService, Backoff),
+  State.
+
+verify_membership(Node, RemoteService, Backoff) ->
+  Parent = self(),
+  spawn(fun() ->
+      verify_membership_loop(Node, RemoteService, Backoff, Parent, 0)
+    end).
+
+verify_membership_loop(Node, RemoteService, LastBackoff, Parent, Times) ->
   Ref = make_ref(),
   {RemoteService, Node} ! {ping, self(), Ref},
   receive
-    {pong, Ref} -> ok
-  after 1000 ->
-    %% this could be a node with slow startup. schedule verification in a few seconds.
-    timer:send_after(5000, self(), {nodeup, Node, []})
+    {pong, Ref} -> Parent ! {node_verified, Node}
+  after LastBackoff ->
+    verify_membership_loop(Node, RemoteService, LastBackoff * 2, Parent, Times+1)
   end.
   
 nodedown(Node, State=#state{nodes=Nodes}) ->
@@ -286,14 +293,7 @@ query_cluster(Seeds) ->
       Ref = make_ref(),
       {admin, Seed} ! {cluster, self(), Ref},
       Ref
-    end, Seeds),
-  lists:foldl(fun(Ref,Set) ->
-      receive
-        {cluster, Ref, Nodes} -> sets:union(Set, sets:from_list(Nodes))
-      after 1000 ->
-        Set
-      end
-    end, sets:new(), Refs).
+    end, Seeds).
 
 cast_handler(RemoteService, Nodes, Request, Context, SelectNode) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
