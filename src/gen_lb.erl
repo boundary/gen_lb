@@ -171,8 +171,9 @@ handle_cast({cast, Request}, State = #state{context=Context,remote_service=Remot
   case sets:size(Nodes) of
     0 ->
       error_logger:error_msg("Cluster is down. Queueing request.~n"),
-      Pend = #pending{type=cast,request=Request,time=now()},
-      {noreply, State#state{pending=[Pend|Pending]}};
+      % Pend = #pending{type=cast,request=Request,time=now()},
+      % {noreply, State#state{pending=[Pend|Pending]}};
+      {noreply, State};
     _ ->
       Context2 = cast_handler(RemoteService, Nodes, Request, Context, SelectNode),
       {noreply, State#state{context=Context2}}
