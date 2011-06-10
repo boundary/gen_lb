@@ -71,7 +71,7 @@ queue_when_down() ->
   State = gen_server:call(lb, state),
   Pending = element(9, State),
   ?assertEqual(sets:new(), Nodes),
-  ?assertMatch([_,_], Pending).
+  ?assertMatch([_], Pending).
   
 flush_when_node_returns() ->
   {ok, C} = countdown:new(5),
