@@ -299,7 +299,7 @@ query_cluster(Seeds) ->
 cast_handler(RemoteService, Nodes, Request, Context, SelectNode) ->
   {Node,Context2} = SelectNode(Nodes,Request,Context),
   % error_logger:info_msg("sending cast to ~p~n", [{RemoteService, Node}]),
-  {RemoteService,Node} ! Request,
+  erlang:send({RemoteService,Node}, Request),
   Context2.
 
 call_handler(From, RemoteService, Nodes, Ref, Request, Context, SelectNode, Timeout) ->
