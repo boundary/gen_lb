@@ -261,8 +261,9 @@ verify_membership_loop(Node, RemoteService, LastBackoff, Parent, Times) ->
   Ref = make_ref(),
   {RemoteService, Node} ! {ping, self(), Ref},
   receive
-    {pong, Ref} -> Parent ! {node_verified, Node},
-    error_logger:info_msg("~p: node_verified ~p~n", [?MODULE, Node])
+    {pong, Ref} -> 
+      Parent ! {node_verified, Node},
+      error_logger:info_msg("~p: node_verified ~p~n", [?MODULE, Node])
   after LastBackoff ->
     verify_membership_loop(Node, RemoteService, LastBackoff * 2, Parent, Times+1)
   end.
